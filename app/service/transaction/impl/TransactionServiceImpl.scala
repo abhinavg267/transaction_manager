@@ -5,6 +5,7 @@ import service.models.DataClasses.{Price, TransactionId, TransactionType}
 import service.models.dtos.RequestAndResponseDTOs.{TransactionDetailsDTO, TransactionValueDTO}
 import service.models.{Transaction, Transactions}
 import service.transaction.TransactionService
+import service.transaction_group.TransactionGroupService
 import slick.jdbc.H2Profile.api._
 import utils.DataBase.{h2DataBase => db}
 
@@ -12,13 +13,16 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
 @Singleton
-class TransactionServiceImpl extends TransactionService {
+class TransactionServiceImpl @Inject()(transactionGroupService: TransactionGroupService) extends TransactionService {
   private val transactionsQuery = Transactions.query
 
   override def addNewTransaction(transactionId: TransactionId, requestDTO: TransactionDetailsDTO): Future[Unit] = {
     db.run {
-      _addNewTransactionDBIO(transactionId, requestDTO.`type`, requestDTO.amount, requestDTO.parent_id)
-    }.map(_ => ())
+      for {
+        rowsAdded <- _addNewTransactionDBIO(transactionId, requestDTO.`type`, requestDTO.amount, requestDTO.parent_id)
+        _ <- transactionGroupService.createNewTransactionGroupAndAssociationsDBIO(transactionId, requestDTO.parent_id)
+      } yield ()
+    }
   }
 
   override def getTransactionById(transactionId: TransactionId): Future[TransactionDetailsDTO] = {
@@ -41,17 +45,22 @@ class TransactionServiceImpl extends TransactionService {
 
   private def getTotalTransactionValueDBIO(transactionId: TransactionId): DBIO[Price] = {
     for {
-      thisTransaction <- _getTransactionByIdDBIO(transactionId)
-      res <- thisTransaction.parentTransactionIdOpt match {
-        case Some(parentTransactionId) => getTotalTransactionValueDBIO(parentTransactionId)
-        case None => DBIO.successful(Price.zeroPrice)
+      allAssociatedTransactionIds <- transactionGroupService.getTransactionsBelongsToItsGroupDBIO(transactionId)
+      allAssociatedTransactions <- _getTransactionByIdsDBIO(allAssociatedTransactionIds)
+    } yield {
+      allAssociatedTransactions.foldLeft(Price.zeroPrice) { case (priceYet, transaction) =>
+        priceYet + transaction.transactionAmount
       }
-    } yield thisTransaction.transactionAmount + res
+    }
   }
 
   private def _getTransactionByIdDBIO(transactionId: TransactionId): DBIO[Transaction] = {
-    transactionsQuery.filter(_.transactionId === transactionId).take(1).result.map(_.headOption.getOrElse(
+    _getTransactionByIdsDBIO(Seq(transactionId)).map(_.headOption.getOrElse(
       throw new Exception(s"Cannot find transaction with transactionId: $transactionId")))
+  }
+
+  private def _getTransactionByIdsDBIO(transactionIds: Seq[TransactionId]): DBIO[Seq[Transaction]] = {
+    transactionsQuery.filter(_.transactionId.inSetBind(transactionIds)).result
   }
 
   private def _getTransactionsByTypesDBIO(transactionTypesOpt: Option[Set[TransactionType]]): DBIO[Seq[Transaction]] = {
@@ -62,10 +71,10 @@ class TransactionServiceImpl extends TransactionService {
 
   private def _addNewTransactionDBIO(transactionId: TransactionId, transactionType: TransactionType,
                                      transactionAmount: Price, parentTransactionIdOpt: Option[TransactionId])
-  : DBIO[Unit] = {
+  : DBIO[Int] = {
     for {
-      _ <- transactionsQuery +=
+      rowsAdded <- transactionsQuery +=
         Transaction(transactionId, transactionType, transactionAmount, parentTransactionIdOpt)
-    } yield ()
+    } yield rowsAdded
   }
 }

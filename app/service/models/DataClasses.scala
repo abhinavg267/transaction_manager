@@ -62,5 +62,27 @@ object DataClasses {
     implicit val dbMapping: JdbcType[TransactionType] with BaseTypedType[TransactionType] =
       MappedColumnType.base[TransactionType, String](_.asString, fromString)
   }
+
+  // TRANSACTION_GROUP_ASSOCIATION_TYPE
+  sealed trait TransactionGroupAssociationType extends WithAsString
+  object TransactionGroupAssociationType extends StringCompanion[TransactionGroupAssociationType] {
+    case object Self extends TransactionGroupAssociationType {
+      override def asString: String = "SELF"
+    }
+
+    case object Descendant extends TransactionGroupAssociationType {
+      override def asString: String = "DESCENDANT"
+    }
+
+    override def all: Set[TransactionGroupAssociationType] = Set(Self, Descendant)
+
+    implicit val formats: Format[TransactionGroupAssociationType] = new Format[TransactionGroupAssociationType] {
+      override def reads(json: JsValue): JsResult[TransactionGroupAssociationType] = json.validate[String].map(fromString)
+      override def writes(o: TransactionGroupAssociationType): JsValue = JsString(o.asString)
+    }
+
+    implicit val dbMapping: JdbcType[TransactionGroupAssociationType] with BaseTypedType[TransactionGroupAssociationType] =
+      MappedColumnType.base[TransactionGroupAssociationType, String](_.asString, fromString)
+  }
 }
 
